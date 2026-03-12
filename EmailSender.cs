@@ -4,12 +4,12 @@ using System.Text;
 
 namespace Dipendenze_Classi
 {
-    public class EmailSender
+    public class EmailSender : Notifiche
     {
-        public void SendEmail(string message) 
+        public void SendNotifica(string message)
         {
             Console.WriteLine("Email sent: " + message);
-
+           
         }
     }
 }

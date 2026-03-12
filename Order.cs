@@ -11,7 +11,7 @@ namespace Dipendenze_Classi
         {
             Console.WriteLine("Order placed for: ");
             EmailSender emailSender = new EmailSender();
-            emailSender.SendEmail("Your order has been placed.");
+
 
 
         }
