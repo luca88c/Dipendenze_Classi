@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/memoria/mem.py\" hook-start 2>/dev/null || python \"$CLAUDE_PROJECT_DIR/.claude/skills/memoria/mem.py\" hook-start",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/memoria/mem.py\" hook-tool 2>/dev/null || python \"$CLAUDE_PROJECT_DIR/.claude/skills/memoria/mem.py\" hook-tool",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/skills/memoria/mem.py\" hook-stop 2>/dev/null || python \"$CLAUDE_PROJECT_DIR/.claude/skills/memoria/mem.py\" hook-stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

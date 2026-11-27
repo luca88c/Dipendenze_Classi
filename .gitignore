@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+# Memoria Claude Code: cache e stato locale (le note .jsonl invece vanno committate)
+.claude/memory/cache.db*
+.claude/memory/.current_session
+.superpowers/

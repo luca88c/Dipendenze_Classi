@@ -61,3 +61,6 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Memoria Claude Code: file append-only, unisci le righe dei due rami senza conflitti
+.claude/memory/*.jsonl merge=union text eol=lf
