@@ -186,7 +186,8 @@ class TestHooks(MemTest):
         self.assertEqual(bash("dotnet build")["type"], "command")
         self.assertIsNotNone(bash("cd src && dotnet test"))
         for ro in ["ls -la", "git status", "cd src && git log --oneline | head", "grep -r x .",
-                   'python3 .claude/skills/memoria/mem.py search "x"']:
+                   'python3 .claude/skills/memoria/mem.py search "x"',
+                   'git ls-tree HEAD | grep -i -E "template|PULL_REQUEST" ; git log | wc -l']:
             self.assertIsNone(bash(ro), ro)
         self.assertIsNone(mem.auto_note({"tool_name": "Read", "tool_input": {"file_path": "/a"}}))
 

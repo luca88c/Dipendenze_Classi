@@ -381,7 +381,9 @@ def _rel(path: str, cwd: str):
 def _skip_command(cmd: str) -> bool:
     if "mem.py" in cmd:
         return True
-    for seg in re.split(r"&&|\|\||;|\|", cmd):
+    # toglie il testo tra virgolette, così "a|b" dentro un grep non conta come pipe
+    unquoted = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", "''", cmd)
+    for seg in re.split(r"&&|\|\||;|\|", unquoted):
         words = seg.split()
         if words and words[0] not in SKIP_CMDS:
             return False
