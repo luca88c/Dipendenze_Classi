@@ -58,5 +58,52 @@ class TestStorage(MemTest):
         self.assertEqual(s["completed"], "c")
 
 
+class TestSearch(MemTest):
+    def test_search_special_chars(self):
+        self.obs(title="GST ristoranti", files=["rates.json"], facts=["composition-scheme 5%"])
+        for q in ["rates.json", "composition-scheme 5%", '"', "", "AND OR NOT", "a*b:c"]:
+            mem.search(q)  # non deve sollevare
+        self.assertEqual(len(mem.search("rates.json")), 1)
+        self.assertEqual(len(mem.search("composition-scheme 5%")), 1)
+
+    def test_search_ranks_match_first(self):
+        self.obs(title="Login utente", narrative="sessioni")
+        best = self.obs(title="Fattura GST ristorante", narrative="GST ristorante abbassata al 5", facts=["GST"])
+        self.obs(title="Altro", narrative="ristorante")
+        hits = mem.search("GST ristorante")
+        self.assertEqual(hits[0]["id"], best)
+        self.assertEqual(set(hits[0]), {"id", "ts", "type", "title", "files"})
+
+    def test_get_keeps_order_and_skips_missing(self):
+        a = self.obs(title="a")
+        b = self.obs(title="b")
+        got = mem.get([b, "zzzzzz", a])
+        self.assertEqual([g["id"] for g in got], [b, a])
+        self.assertIn("narrative", got[0])
+
+    def test_cache_rebuilds_after_append(self):
+        self.obs(title="primo")
+        self.assertEqual(mem.search("secondo"), [])
+        with open(self.dir / "observations.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"id": "abc123", "ts": "2026-01-01 10:00", "type": "change",
+                                "title": "secondo arrivato da git pull", "narrative": "",
+                                "facts": [], "files": []}) + "\n")
+        self.assertEqual([h["id"] for h in mem.search("secondo")], ["abc123"])
+
+    def test_search_without_fts5_fallback(self):
+        self.obs(title="Altro", narrative="ristorante")
+        best = self.obs(title="GST ristorante", files=["rates.json"])
+        old, mem._FTS5 = mem._FTS5, False
+        try:
+            hits = mem.search("GST ristorante rates.json")
+        finally:
+            mem._FTS5 = old
+        self.assertEqual(hits[0]["id"], best)
+
+    def test_to_match_query_quotes_and_drops_stopwords(self):
+        self.assertEqual(mem.to_match_query("Perché il GST è 5?"), '"gst" OR "5"')
+        self.assertEqual(mem.to_match_query("the and"), "")
+
+
 if __name__ == "__main__":
     unittest.main()
