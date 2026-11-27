@@ -105,5 +105,60 @@ class TestSearch(MemTest):
         self.assertEqual(mem.to_match_query("the and"), "")
 
 
+def run_cli(*argv, stdin=""):
+    out = io.StringIO()
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO(stdin)
+    try:
+        with redirect_stdout(out):
+            code = mem.main(list(argv))
+    finally:
+        sys.stdin = old_stdin
+    return code, out.getvalue()
+
+
+class TestIndexCli(MemTest):
+    def test_index_empty_memory(self):
+        text = mem.build_index()
+        self.assertIn("vuota", text)
+
+    def test_index_respects_cap(self):
+        for i in range(100):
+            self.obs(title=f"Nota numero {i} con un titolo abbastanza lungo da riempire")
+            mem.add_observation({"source": "auto", "type": "change", "title": f"Modificato f{i}.py",
+                                 "files": [f"f{i}.py"]})
+        mem.add_summary({"request": "x" * 500, "completed": "y" * 500, "next_steps": "z" * 500})
+        text = mem.build_index()
+        self.assertLessEqual(len(text), 1200)
+        self.assertIn("Nota numero 99", text)   # la più recente c'è
+        self.assertNotIn("Nota numero 0 ", text)  # le vecchie no
+        self.assertIn("mem.py search", text)     # istruzioni d'uso sempre presenti
+
+    def test_index_shows_last_summary_and_files(self):
+        mem.add_observation({"source": "auto", "type": "change", "title": "Modificato Order.cs", "files": ["Order.cs"]})
+        mem.add_summary({"request": "rifattorizza ordini", "completed": "Order usa INotifiche", "next_steps": "test"})
+        text = mem.build_index()
+        self.assertIn("Order usa INotifiche", text)
+        self.assertIn("Order.cs", text)
+
+    def test_cli_add_then_search_then_get(self):
+        code, out = run_cli("add", "--type", "decision", "--title", "GST ristoranti al 5%",
+                            "--narrative", "Confermato da Priya", "--facts", "rate 5", "--files", "rates.json")
+        self.assertEqual(code, 0)
+        oid = out.strip().split()[-1]
+        code, out = run_cli("search", "ristoranti")
+        self.assertIn(oid, out)
+        self.assertNotIn("Confermato da Priya", out)  # search mostra solo titoli
+        code, out = run_cli("get", oid)
+        self.assertIn("Confermato da Priya", out)
+
+    def test_cli_summary_and_stats(self):
+        code, _ = run_cli("summary", "--request", "r", "--completed", "fatto")
+        self.assertEqual(code, 0)
+        self.assertEqual(mem.load_sessions()[-1]["completed"], "fatto")
+        code, out = run_cli("stats")
+        self.assertIn("riassunti: 1", out)
+
+
 if __name__ == "__main__":
     unittest.main()

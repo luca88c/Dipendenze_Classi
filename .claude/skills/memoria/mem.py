@@ -128,7 +128,8 @@ def _fts5_available() -> bool:
     global _FTS5
     if _FTS5 is None:
         try:
-            sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(x)")
+            with closing(sqlite3.connect(":memory:")) as db:
+                db.execute("CREATE VIRTUAL TABLE t USING fts5(x)")
             _FTS5 = True
         except sqlite3.Error:
             _FTS5 = False
@@ -215,3 +216,147 @@ def get(ids: list) -> list:
     """Note complete (livello 3), nell'ordine richiesto; id inesistenti saltati."""
     by_id = {o.get("id"): o for o in load_observations()}
     return [by_id[i] for i in ids if i in by_id]
+
+
+# --------------------------------------------------------------------------- indice (livello 1)
+
+USAGE_LINE = ('Dettagli: python3 .claude/skills/memoria/mem.py search "parole" -> get ID... '
+              '(vedi skill "memoria")')
+INDEX_NOTES = 15
+INDEX_FILES = 8
+
+
+def _cut(text: str, n: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def build_index(max_chars: int = 1200) -> str:
+    """Il testo dato a Claude all'avvio: piccolo, solo titoli. I dettagli si chiedono dopo."""
+    obs = load_observations()
+    sessions = load_sessions()
+    if not obs and not sessions:
+        return "# Memoria del progetto vuota: nessuna nota ancora.\n" + USAGE_LINE
+
+    head = [f"# Memoria del progetto ({len(obs)} note, {len(sessions)} riassunti) - solo titoli"]
+    if sessions:
+        s = sessions[-1]
+        line = f"Ultima sessione ({s.get('ts', '')}): {_cut(s.get('completed') or s.get('request'), 200)}"
+        if s.get("next_steps"):
+            line += f" | Prossimi passi: {_cut(s['next_steps'], 120)}"
+        head.append(line)
+
+    counts = {}
+    for o in obs:
+        if o.get("source") == "auto":
+            for f in o.get("files") or []:
+                counts[f] = counts.get(f, 0) + 1
+    files_line = ""
+    if counts:
+        recent_first = list(dict.fromkeys(f for o in reversed(obs) if o.get("source") == "auto"
+                                          for f in (o.get("files") or [])))
+        top = sorted(recent_first, key=lambda f: -counts[f])[:INDEX_FILES]
+        files_line = "File toccati: " + ", ".join(f"{_cut(f, 40)} ({counts[f]})" for f in top)
+
+    tail = ([files_line] if files_line else []) + [USAGE_LINE]
+    budget = max_chars - sum(len(x) + 1 for x in head + tail)
+
+    notes = [o for o in reversed(obs) if o.get("source") != "auto"][:INDEX_NOTES]
+    body = []
+    if notes:
+        title = "Note recenti (id data tipo titolo):"
+        if len(title) + 1 <= budget:
+            body.append(title)
+            budget -= len(title) + 1
+        for o in notes:
+            line = f"{o.get('id')} {str(o.get('ts', ''))[:10]} {o.get('type', '')} {_cut(o.get('title'), 70)}"
+            if len(line) + 1 > budget:
+                break
+            body.append(line)
+            budget -= len(line) + 1
+
+    text = "\n".join(head + body + tail)
+    return text[:max_chars]
+
+
+# --------------------------------------------------------------------------- CLI
+
+def _fmt_full(o: dict) -> str:
+    lines = [f"[{o.get('id')}] {o.get('ts', '')} {o.get('type', '')} - {o.get('title', '')}"]
+    if o.get("narrative"):
+        lines.append(o["narrative"])
+    lines += [f"- {f}" for f in o.get("facts") or []]
+    if o.get("files"):
+        lines.append("file: " + ", ".join(o["files"]))
+    return "\n".join(lines)
+
+
+def _parser():
+    import argparse
+    p = argparse.ArgumentParser(prog="mem.py", description="Memoria persistente del progetto.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("index", help="indice breve (livello 1)")
+    s = sub.add_parser("search", help="cerca note, solo titoli (livello 2)")
+    s.add_argument("text", nargs="+")
+    s.add_argument("-n", type=int, default=5)
+    g = sub.add_parser("get", help="note complete per id (livello 3)")
+    g.add_argument("ids", nargs="+")
+    a = sub.add_parser("add", help="salva una nota")
+    a.add_argument("--type", default="note",
+                   help="decision, bugfix, feature, refactor, discovery, change, note")
+    a.add_argument("--title", required=True)
+    a.add_argument("--narrative", default="")
+    a.add_argument("--facts", nargs="*", default=[])
+    a.add_argument("--files", nargs="*", default=[])
+    m = sub.add_parser("summary", help="riassunto di fine lavoro")
+    m.add_argument("--request", default="")
+    m.add_argument("--investigated", default="")
+    m.add_argument("--learned", default="")
+    m.add_argument("--completed", required=True)
+    m.add_argument("--next", dest="next_steps", default="")
+    sub.add_parser("stats", help="conteggi")
+    for h in ("hook-start", "hook-tool", "hook-stop"):
+        sub.add_parser(h, help="usato dagli hook di Claude Code (legge JSON da stdin)")
+    return p
+
+
+def main(argv: list) -> int:
+    args = _parser().parse_args(argv)
+    if args.cmd.startswith("hook-"):
+        return run_hook(args.cmd)
+    if args.cmd == "index":
+        print(build_index())
+    elif args.cmd == "search":
+        hits = search(" ".join(args.text), args.n)
+        if not hits:
+            print("Nessun risultato. Prova sinonimi o parole del codice (nomi di file, classi).")
+        for h in hits:
+            files = f" [{', '.join(h['files'][:3])}]" if h["files"] else ""
+            print(f"{h['id']} {str(h['ts'])[:10]} {h['type']} {h['title']}{files}")
+    elif args.cmd == "get":
+        found = get(args.ids)
+        print("\n\n".join(_fmt_full(o) for o in found) or "Nessuna nota con questi id.")
+    elif args.cmd == "add":
+        oid = add_observation({"type": args.type, "title": args.title, "narrative": args.narrative,
+                               "facts": args.facts, "files": args.files})
+        print(f"Salvata nota {oid}")
+    elif args.cmd == "summary":
+        add_summary({"request": args.request, "investigated": args.investigated,
+                     "learned": args.learned, "completed": args.completed,
+                     "next_steps": args.next_steps})
+        print("Riassunto salvato.")
+    elif args.cmd == "stats":
+        obs = load_observations()
+        auto = sum(1 for o in obs if o.get("source") == "auto")
+        print(f"note: {len(obs)} (scritte da Claude {len(obs) - auto}, automatiche {auto})")
+        print(f"riassunti: {len(load_sessions())}")
+    return 0
+
+
+def run_hook(name: str) -> int:
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main(sys.argv[1:]))
