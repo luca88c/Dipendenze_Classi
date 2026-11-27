@@ -199,7 +199,7 @@ def search(text: str, limit: int = 5) -> list:
             rows = db.execute(
                 "SELECT oid FROM obs_fts WHERE obs_fts MATCH ?"
                 " ORDER BY bm25(obs_fts, 0, 3.0, 1.0, 1.0, 1.0, 0.5) LIMIT ?",
-                (query, limit),
+                (query, limit * 4),
             ).fetchall()
         ids = [r["oid"] for r in rows]
     else:  # ripiego senza FTS5: conta le parole in comune, il titolo pesa di più
@@ -211,8 +211,10 @@ def search(text: str, limit: int = 5) -> list:
             score = 3 * len(terms & set(_words(o.get("title", "")))) + len(terms & body)
             if score:
                 scored.append((-score, o.get("id")))
-        ids = [i for _, i in sorted(scored)[:limit]]
-    return [_brief(by_id[i]) for i in ids if i in by_id]
+        ids = [i for _, i in sorted(scored)]
+    # Le note scritte da Claude contengono il perché: vengono prima delle note automatiche.
+    ids = sorted((i for i in ids if i in by_id), key=lambda i: by_id[i].get("source") == "auto")
+    return [_brief(by_id[i]) for i in ids[:limit]]
 
 
 def get(ids: list) -> list:

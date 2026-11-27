@@ -74,6 +74,11 @@ class TestSearch(MemTest):
         self.assertEqual(hits[0]["id"], best)
         self.assertEqual(set(hits[0]), {"id", "ts", "type", "title", "files"})
 
+    def test_search_prefers_claude_notes_over_auto(self):
+        mem.add_observation({"source": "auto", "type": "change", "title": "Modificato Order.cs", "files": ["Order.cs"]})
+        why = self.obs(title="Order riceve INotifica nel costruttore", files=["Order.cs"])
+        self.assertEqual(mem.search("Order usa notifiche")[0]["id"], why)
+
     def test_get_keeps_order_and_skips_missing(self):
         a = self.obs(title="a")
         b = self.obs(title="b")
