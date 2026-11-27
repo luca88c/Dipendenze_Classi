@@ -30,17 +30,18 @@ senza bruciare token: all'avvio solo un indice piccolo, i dettagli solo quando s
 - C: note a mano in CLAUDE.md. Zero infrastruttura ma caricato intero ogni volta: i token crescono.
 
 ## Design
-- `.claude/memory/observations.jsonl` e `sessions.jsonl`: fonte di verità, testo, append-only,
-  committati. `.gitattributes` con `merge=union` per evitare conflitti tra branch.
+- `.claude/memory/<data>_<sessione>.jsonl`: fonte di verità, un file per sessione (note e
+  riassunti), append-only, committati. Sessioni diverse = file diversi: niente conflitti nemmeno
+  nei merge di GitHub (che ignora `merge=union`, tenuto comunque per i merge locali).
 - `.claude/memory/cache.db` (gitignored): SQLite + FTS5 ricostruito quando i JSONL cambiano.
   Fallback a ricerca semplice se FTS5 manca.
 - `.claude/skills/memoria/mem.py`, solo stdlib. Comandi: `index`, `search`, `get`, `add`,
   `summary`, `stats`, più i sottocomandi per gli hook.
-- Id brevi esadecimali (6 caratteri), così note scritte su branch diversi non collidono.
+- Id esadecimali di 8 caratteri, così note scritte su branch diversi non collidono.
 - Hook in `.claude/settings.json`:
   - SessionStart → stampa l'indice (ultimo riassunto + note recenti + file toccati), tetto ~300 token.
   - PostToolUse (Edit/Write/MultiEdit/NotebookEdit/Bash) → nota automatica silenziosa;
-    i comandi Bash di sola lettura (ls, cat, grep, git status…) vengono ignorati.
+    ignorati: comandi di sola lettura, tutti i comandi git, file fuori dal progetto o in .claude/memory.
   - Stop → se in questa sessione ci sono modifiche non ancora spiegate da una nota o riassunto,
     blocca una volta e chiede a Claude di scrivere il riassunto (protezione anti-loop).
 - `SKILL.md`: quando cercare (search poi get solo sugli id utili, provando sinonimi), quando

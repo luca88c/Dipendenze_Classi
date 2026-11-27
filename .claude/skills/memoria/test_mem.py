@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,10 +17,13 @@ class MemTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["MEMORIA_DIR"] = self.tmp.name
+        self._pd = os.environ.pop("CLAUDE_PROJECT_DIR", None)  # i test usano il cwd dell'evento
         self.dir = Path(self.tmp.name)
 
     def tearDown(self):
         os.environ.pop("MEMORIA_DIR", None)
+        if self._pd is not None:
+            os.environ["CLAUDE_PROJECT_DIR"] = self._pd
         self.tmp.cleanup()
 
     def obs(self, **kw):
@@ -31,7 +35,7 @@ class MemTest(unittest.TestCase):
 class TestStorage(MemTest):
     def test_add_and_load_roundtrip(self):
         oid = self.obs(title="GST ristoranti al 5%", narrative="Deciso da Priya", facts=["rate 5"], files=["rates.json"])
-        self.assertEqual(len(oid), 6)
+        self.assertEqual(len(oid), 8)
         [o] = mem.load_observations()
         self.assertEqual(o["id"], oid)
         self.assertEqual(o["title"], "GST ristoranti al 5%")
@@ -42,8 +46,8 @@ class TestStorage(MemTest):
 
     def test_corrupt_line_skipped(self):
         self.obs(title="uno")
-        with open(self.dir / "observations.jsonl", "a", encoding="utf-8") as f:
-            f.write("{rotta\n")
+        with open(mem.session_file(), "a", encoding="utf-8") as f:
+            f.write("{rotta\n<<<<<<< HEAD\n[1, 2]\n")
         self.obs(title="due")
         self.assertEqual([o["title"] for o in mem.load_observations()], ["uno", "due"])
 
@@ -89,8 +93,8 @@ class TestSearch(MemTest):
     def test_cache_rebuilds_after_append(self):
         self.obs(title="primo")
         self.assertEqual(mem.search("secondo"), [])
-        with open(self.dir / "observations.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"id": "abc123", "ts": "2026-01-01 10:00", "type": "change",
+        with open(mem.session_file(), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"kind": "obs", "id": "abc123", "ts": "2026-01-01 10:00", "type": "change",
                                 "title": "secondo arrivato da git pull", "narrative": "",
                                 "facts": [], "files": []}) + "\n")
         self.assertEqual([h["id"] for h in mem.search("secondo")], ["abc123"])
@@ -223,6 +227,85 @@ class TestHooks(MemTest):
         for h in ("hook-start", "hook-tool", "hook-stop"):
             code, _ = run_cli(h, stdin="non è json")
             self.assertEqual(code, 0, h)
+
+
+class TestReviewFixes(MemTest):
+    MEM = str(Path(__file__).resolve().parent / "mem.py")
+
+    def cli(self, *args, stdin=b""):
+        env = dict(os.environ, PYTHONIOENCODING="cp1252")
+        return subprocess.run([sys.executable, self.MEM, *args], input=stdin, env=env,
+                              capture_output=True)
+
+    def test_search_many_auto_notes_keeps_why_note(self):  # C1
+        for _ in range(25):
+            mem.add_observation({"source": "auto", "type": "change", "title": "Modificato Order.cs",
+                                 "files": ["Order.cs"]})
+        why = self.obs(title="Order riceve INotifica", files=["Order.cs"])
+        hits = mem.search("Order.cs")
+        self.assertEqual(hits[0]["id"], why)
+        self.assertEqual([h["title"] for h in hits].count("Modificato Order.cs"), 1)
+
+    def test_cli_utf8_on_cp1252_console(self):  # I1
+        self.obs(title="Freccia → perché ✓ città")
+        r = self.cli("search", "freccia")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("→ perché ✓ città", r.stdout.decode("utf-8"))
+        r = self.cli("hook-start")
+        self.assertIn("perché", r.stdout.decode("utf-8"))
+
+    def test_hook_stdin_utf8_on_cp1252_console(self):  # I1
+        ev = {"session_id": "s1", "cwd": "/proj", "tool_name": "Write",
+              "tool_input": {"file_path": "/proj/Università.cs", "content": "dice “ciao”"}}
+        self.cli("hook-tool", stdin=json.dumps(ev, ensure_ascii=False).encode("utf-8"))
+        self.assertEqual(mem.load_observations()[-1]["files"], ["Università.cs"])
+
+    def test_git_commands_not_logged_and_reason_mentions_push(self):  # I2
+        for cmd in ["git add -A", "git commit -m x", "cd a && git push -u origin b", "git pull"]:
+            self.assertIsNone(mem.auto_note({"cwd": "/proj", "tool_name": "Bash",
+                                             "tool_input": {"command": cmd}}), cmd)
+        mem.set_current_session("s1")
+        mem.add_observation(mem.auto_note({"cwd": "/proj", "tool_name": "Edit",
+                                           "tool_input": {"file_path": "/proj/a.cs"}}))
+        self.assertIn("push", mem.stop_decision({"session_id": "s1"})["reason"])
+
+    def test_each_session_writes_its_own_file(self):  # I3
+        mem.set_current_session("sessione-uno")
+        a = self.obs(title="a")
+        mem.add_summary({"completed": "uno"})
+        mem.set_current_session("sessione-due")
+        b = self.obs(title="b")
+        files = sorted(p.name for p in self.dir.glob("*.jsonl"))
+        self.assertEqual(len(files), 2)
+        self.assertTrue(any("sessione-uno" in f for f in files), files)
+        self.assertTrue(any("sessione-due" in f for f in files), files)
+        self.assertEqual([o["id"] for o in mem.load_observations()], [a, b])
+        self.assertEqual(mem.load_sessions()[0]["completed"], "uno")
+
+    def test_index_keeps_room_for_why_notes(self):  # I4
+        for i in range(20):
+            self.obs(title=f"Decisione {i} " + "x" * 50)
+        for i in range(8):
+            f = f"src/Progetto.Dominio/Fatturazione/Servizi/Molto/Profondo/Servizio{i}.cs"
+            mem.add_observation({"source": "auto", "type": "change", "title": f"Modificato {f}", "files": [f]})
+        mem.add_summary({"completed": "c" * 400, "next_steps": "n" * 400})
+        text = mem.build_index()
+        self.assertLessEqual(len(text), 1200)
+        self.assertGreaterEqual(sum(1 for l in text.splitlines() if " Decisione " in l), 6)
+        self.assertIn("Servizio7.cs", text)
+
+    def test_search_survives_corrupt_cache(self):  # M1
+        self.obs(title="ristorante")
+        (self.dir / "cache.db").write_bytes(b"spazzatura" * 100)
+        self.assertEqual(len(mem.search("ristorante")), 1)
+
+    def test_paths_outside_project_or_in_memory_not_logged(self):  # M5
+        def edit(path):
+            return mem.auto_note({"cwd": "/proj", "tool_name": "Edit", "tool_input": {"file_path": path}})
+        self.assertIsNone(edit("/tmp/scratch.txt"))
+        self.assertIsNone(edit("C:/Users/mario/x.cs" if os.name == "nt" else "/home/mario/x.cs"))
+        self.assertIsNone(edit("/proj/.claude/memory/2026-01-01_s1.jsonl"))
+        self.assertIsNotNone(edit("/proj/src/a.cs"))
 
 
 if __name__ == "__main__":

@@ -5,7 +5,8 @@ description: Memoria persistente del progetto tra sessioni, a basso consumo di t
 
 # Memoria
 
-La memoria vive in `.claude/memory/*.jsonl` (testo, committato nel repo). Tre livelli, come claude-mem:
+La memoria vive in `.claude/memory/<data>_<sessione>.jsonl`: un file di testo per sessione, committato nel repo
+(sessioni diverse non vanno mai in conflitto, nemmeno nelle PR su GitHub). Tre livelli, come claude-mem:
 paghi i dettagli solo quando li chiedi.
 
 | Livello | Cosa vedi | Costo |
@@ -35,7 +36,8 @@ python3 .claude/skills/memoria/mem.py index | stats
 
 ## Scrivere
 
-Le modifiche ai file e i comandi vengono già annotati in automatico (gratis). Tu salvi solo
+Le modifiche ai file del progetto e i comandi che cambiano qualcosa vengono già annotati in automatico
+(gratis; i comandi git no, li ricorda già git). Tu salvi solo
 quello che il codice non dice: **il perché**.
 
 Salva una nota (`add`) quando:
