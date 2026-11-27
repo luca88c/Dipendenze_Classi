@@ -92,7 +92,10 @@ def add_observation(obs: dict) -> str:
 
 def add_summary(s: dict) -> None:
     """Salva il riassunto di fine lavoro della sessione corrente."""
-    rec = {"session": current_session(), "ts": now()}
+    obs = load_observations()
+    # "after": l'ultima nota esistente quando il riassunto è stato scritto.
+    # Serve allo Stop hook per capire quali modifiche sono già spiegate.
+    rec = {"session": current_session(), "ts": now(), "after": obs[-1].get("id", "") if obs else ""}
     for k in ("request", "investigated", "learned", "completed", "next_steps"):
         rec[k] = (s.get(k) or "").strip()
     _append(SESS_FILE, rec)
@@ -353,7 +356,114 @@ def main(argv: list) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- hook
+
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+READONLY_CMDS = {"ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "echo", "which",
+                 "cd", "wc", "less", "more", "tree", "stat", "file", "type", "env", "date",
+                 "sort", "uniq", "diff", "true"}
+READONLY_GIT = {"status", "log", "diff", "show", "branch", "remote", "rev-parse", "blame"}
+TOOL_CMD_CHARS = 100
+
+
+def _rel(path: str, cwd: str) -> str:
+    base = os.environ.get("CLAUDE_PROJECT_DIR") or cwd
+    if base and path:
+        try:
+            rel = os.path.relpath(path, base)
+            if not rel.startswith(".."):
+                return rel.replace(os.sep, "/")
+        except ValueError:  # Windows, dischi diversi
+            pass
+    return path
+
+
+def _is_readonly(cmd: str) -> bool:
+    if "mem.py" in cmd:
+        return True
+    for seg in re.split(r"&&|\|\||;|\|", cmd):
+        words = seg.split()
+        if not words:
+            continue
+        if words[0] == "git" and len(words) > 1 and words[1] in READONLY_GIT:
+            continue
+        if words[0] not in READONLY_CMDS:
+            return False
+    return True
+
+
+def auto_note(event: dict):
+    """Nota automatica (0 token) per una tool call di Claude Code, o None se non interessa."""
+    tool = event.get("tool_name", "")
+    inp = event.get("tool_input") or {}
+    if tool in EDIT_TOOLS:
+        path = inp.get("file_path") or inp.get("notebook_path") or ""
+        if not path:
+            return None
+        rel = _rel(path, event.get("cwd", ""))
+        return {"source": "auto", "type": "change", "title": f"Modificato {rel}", "files": [rel]}
+    if tool == "Bash":
+        cmd = " ".join(str(inp.get("command", "")).split())
+        if not cmd or _is_readonly(cmd):
+            return None
+        return {"source": "auto", "type": "command", "title": "$ " + _cut(cmd, TOOL_CMD_CHARS)}
+    return None
+
+
+def stop_decision(event: dict):
+    """Blocca lo stop una volta se ci sono modifiche di questa sessione non spiegate da una nota."""
+    if event.get("stop_hook_active"):
+        return None
+    sid = event.get("session_id") or current_session()
+    obs = load_observations()
+    pos = {o.get("id"): i for i, o in enumerate(obs)}
+    cutoff = -1
+    for i, o in enumerate(obs):
+        if o.get("session") == sid and o.get("source") != "auto":
+            cutoff = i
+    for s in load_sessions():
+        if s.get("session") == sid:
+            cutoff = max(cutoff, pos.get(s.get("after"), -1))
+    pending = [o for o in obs[cutoff + 1:]
+               if o.get("session") == sid and o.get("source") == "auto" and o.get("type") == "change"]
+    if not pending:
+        return None
+    files = list(dict.fromkeys(f for o in pending for f in o.get("files") or []))
+    shown = ", ".join(files[:5]) + (" …" if len(files) > 5 else "")
+    return {"decision": "block", "reason": (
+        f"Memoria: hai modificato {len(files)} file ({shown}) senza salvare il perché. "
+        'Salva un riassunto breve: python3 .claude/skills/memoria/mem.py summary '
+        '--request "..." --completed "..." [--learned "..."] [--next "..."]; '
+        'per scelte importanti anche: mem.py add --type decision --title "..." --narrative "...". '
+        "Ricorda di includere .claude/memory/ nel commit. Poi termina normalmente.")}
+
+
 def run_hook(name: str) -> int:
+    """Punto d'ingresso degli hook: non deve mai rompere la sessione."""
+    import sys
+    try:
+        raw = sys.stdin.read()
+        try:
+            event = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            event = {}
+        if not isinstance(event, dict):
+            event = {}
+        sid = event.get("session_id")
+        if sid and sid != current_session():
+            set_current_session(sid)
+        if name == "hook-start":
+            print(build_index())
+        elif name == "hook-tool":
+            note = auto_note(event)
+            if note:
+                add_observation(note)
+        elif name == "hook-stop":
+            decision = stop_decision(event)
+            if decision:
+                print(json.dumps(decision, ensure_ascii=False))
+    except Exception as exc:  # noqa: BLE001 - un hook non deve mai fallire
+        print(f"[memoria] errore ignorato: {exc}", file=sys.stderr)
     return 0
 
 

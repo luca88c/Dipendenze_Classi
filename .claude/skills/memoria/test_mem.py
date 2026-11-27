@@ -160,5 +160,65 @@ class TestIndexCli(MemTest):
         self.assertIn("riassunti: 1", out)
 
 
+class TestHooks(MemTest):
+    def edit_event(self, path="/proj/src/Order.cs", sid="s1"):
+        return {"session_id": sid, "cwd": "/proj", "hook_event_name": "PostToolUse",
+                "tool_name": "Edit", "tool_input": {"file_path": path}}
+
+    def test_auto_note_edit(self):
+        n = mem.auto_note(self.edit_event())
+        self.assertEqual((n["type"], n["source"], n["files"]), ("change", "auto", ["src/Order.cs"]))
+        self.assertIn("src/Order.cs", n["title"])
+
+    def test_auto_note_bash_and_ignores_readonly(self):
+        def bash(cmd):
+            return mem.auto_note({"session_id": "s1", "cwd": "/proj", "tool_name": "Bash",
+                                  "tool_input": {"command": cmd}})
+        self.assertEqual(bash("dotnet build")["type"], "command")
+        self.assertIsNotNone(bash("cd src && dotnet test"))
+        for ro in ["ls -la", "git status", "cd src && git log --oneline | head", "grep -r x .",
+                   'python3 .claude/skills/memoria/mem.py search "x"']:
+            self.assertIsNone(bash(ro), ro)
+        self.assertIsNone(mem.auto_note({"tool_name": "Read", "tool_input": {"file_path": "/a"}}))
+
+    def test_stop_blocks_once_then_allows_after_summary(self):
+        run_cli("hook-start", stdin=json.dumps({"session_id": "s1", "source": "startup"}))
+        self.assertIsNone(mem.stop_decision({"session_id": "s1"}))  # niente modifiche: non blocca
+        run_cli("hook-tool", stdin=json.dumps(self.edit_event()))
+        d = mem.stop_decision({"session_id": "s1", "stop_hook_active": False})
+        self.assertEqual(d["decision"], "block")
+        self.assertIn("summary", d["reason"])
+        run_cli("summary", "--completed", "fatto")
+        self.assertIsNone(mem.stop_decision({"session_id": "s1"}))
+        run_cli("hook-tool", stdin=json.dumps(self.edit_event("/proj/b.cs")))  # nuova modifica dopo
+        self.assertIsNotNone(mem.stop_decision({"session_id": "s1"}))
+        run_cli("add", "--title", "perché b.cs")
+        self.assertIsNone(mem.stop_decision({"session_id": "s1"}))
+
+    def test_stop_ignores_other_sessions(self):
+        run_cli("hook-tool", stdin=json.dumps(self.edit_event(sid="vecchia")))
+        self.assertIsNone(mem.stop_decision({"session_id": "nuova"}))
+
+    def test_stop_never_blocks_when_active(self):
+        run_cli("hook-tool", stdin=json.dumps(self.edit_event()))
+        self.assertIsNone(mem.stop_decision({"session_id": "s1", "stop_hook_active": True}))
+
+    def test_hook_start_prints_index_and_sets_session(self):
+        code, out = run_cli("hook-start", stdin=json.dumps({"session_id": "abc", "source": "startup"}))
+        self.assertEqual(code, 0)
+        self.assertIn("Memoria del progetto", out)
+        self.assertEqual(mem.current_session(), "abc")
+
+    def test_hook_stop_prints_json_when_blocking(self):
+        run_cli("hook-tool", stdin=json.dumps(self.edit_event()))
+        code, out = run_cli("hook-stop", stdin=json.dumps({"session_id": "s1"}))
+        self.assertEqual(json.loads(out)["decision"], "block")
+
+    def test_hook_bad_stdin_exits_zero(self):
+        for h in ("hook-start", "hook-tool", "hook-stop"):
+            code, _ = run_cli(h, stdin="non è json")
+            self.assertEqual(code, 0, h)
+
+
 if __name__ == "__main__":
     unittest.main()
